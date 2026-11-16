@@ -1881,6 +1881,22 @@ function scanInline(src, refs) {
   // Filled in by the ']' handler when a link forms; checked by the
   // emphasis/strikethrough handlers below.
   const suppress = [];
+  // Does the innermost open link's text (so far) already contain a link
+  // node? If so that link cannot form (nested links are blocked), so a
+  // bare autolink here may form — it cannot break a link that will never
+  // form. Otherwise a bare autolink is suppressed while an opener is
+  // active, so it cannot swallow the ']' that closes a link that will
+  // form.
+  const openerHasLink = () => {
+    if (openers.length === 0) return false;
+    const op = openers[openers.length - 1];
+    const opIdx = nodes.indexOf(op);
+    for (let q = opIdx + 1; q < nodes.length; q++) {
+      if (nodes[q].k === 'a') return true;
+    }
+    return false;
+  };
+  const bareOk = () => !inLink && (openers.length === 0 || openerHasLink());
   const pushRaw = (upto) => { if (upto > textStart) textBuf += src.slice(textStart, upto); };
   const flushText = () => {
     pushRaw(i);
@@ -2246,7 +2262,7 @@ function scanInline(src, refs) {
     // extended autolinks: scheme, www., mailto:/xmpp:, email — none of them
     // form inside an active link/image opener (marked's inLink), so a bare
     // URL cannot swallow the ']' that closes the link text
-    if ((code === 104 || code === 72 || code === 102 || code === 70) && openers.length === 0 && !inLink) {
+    if ((code === 104 || code === 72 || code === 102 || code === 70) && bareOk()) {
       // http://, https://, ftp:// (case-insensitive)
       let schemeLen = 0;
       if (src.slice(i, i + 7).toLowerCase() === 'http://') schemeLen = 7;
@@ -2265,7 +2281,7 @@ function scanInline(src, refs) {
         }
       }
     }
-    if (code === 119 && src[i + 1] === 'w' && src[i + 2] === 'w' && src[i + 3] === '.' && openers.length === 0 && !inLink) {
+    if (code === 119 && src[i + 1] === 'w' && src[i + 2] === 'w' && src[i + 3] === '.' && bareOk()) {
       if (boundary || src[i - 1] === ' ' || src[i - 1] === '\t' || src[i - 1] === '\n' || src[i - 1] === '(') {
         const u = tryExtUrl(src, i, i + 4, 'www');
         if (u) {
@@ -2279,7 +2295,7 @@ function scanInline(src, refs) {
         }
       }
     }
-    if ((code === 109 || code === 120) && openers.length === 0 && !inLink) {
+    if ((code === 109 || code === 120) && bareOk()) {
       // mailto: / xmpp: (lowercase only), not after an alphanumeric
       let preLen = 0, mailto = false;
       if (src.slice(i, i + 7) === 'mailto:') { preLen = 7; mailto = true; }
@@ -2312,7 +2328,7 @@ function scanInline(src, refs) {
       }
     }
     // bare email (only at the start of a maximal narrow-local run)
-    if (isNarrowLocal(code) && (i === 0 || !isNarrowLocal(src.charCodeAt(i - 1))) && openers.length === 0 && !inLink) {
+    if (isNarrowLocal(code) && (i === 0 || !isNarrowLocal(src.charCodeAt(i - 1))) && bareOk()) {
       const em = matchEmail(src, i);
       if (em) {
         const text = src.slice(i, em.end);
