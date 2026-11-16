@@ -1765,7 +1765,7 @@ function tryInlineTail(src, pos) {
     while (m < n && (src[m] === ' ' || src[m] === '\t' || src[m] === '\n')) m++;
   }
   if (m >= n || src[m] !== ')') return null;
-  return { href: dest, title, end: m + 1 };
+  return { href: dest, title, end: m + 1, inline: true };
 }
 
 // Whether a link text matches marked's link-text pattern (the `re` used
@@ -1896,7 +1896,6 @@ function scanInline(src, refs) {
     }
     return false;
   };
-  const bareOk = () => !inLink && (openers.length === 0 || openerHasLink());
   const pushRaw = (upto) => { if (upto > textStart) textBuf += src.slice(textStart, upto); };
   const flushText = () => {
     pushRaw(i);
@@ -2087,8 +2086,12 @@ function scanInline(src, refs) {
             // dangling backticks in this link's text: a backtick run with
             // no matching closer inside the text pairs with the next
             // same-length run after the link (marked's emStrong mask), and
-            // emphasis delimiters between them stay literal
-            {
+            // emphasis delimiters between them stay literal. Only for
+            // INLINE links: a reference link is masked whole by marked's
+            // reflink masking when refs exist, so its backticks never pair
+            // with a later run (doc-35: [run ``response`][tool-91] must not
+            // suppress the *fast* in the following link).
+            if (tail.inline) {
               const textStartPos = op.pos + (op.img ? 2 : 1);
               const open = new Map();
               let p = 0;
