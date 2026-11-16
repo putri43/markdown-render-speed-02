@@ -1316,7 +1316,14 @@ function flanking(src, start, end) {
     bPu, aPu,
     // group-6 run (marked's emStrongRDelim regex): a non-whitespace,
     // non-punctuation character on both sides of the run
-    g6: !bWs && !bPu && !aWs && !aPu
+    g6: !bWs && !bPu && !aWs && !aPu,
+    // group-5/6 run (odd-match applies in marked's emStrong m-accounting):
+    // group 6, or preceded by punctuation and followed by punctuation
+    g56: (!bWs && !bPu && !aWs && !aPu) || (bPu && aPu),
+    // group-3/4 run (opener-like in marked's emStrong m-accounting):
+    // preceded by punctuation/space and followed by a word char (group 3),
+    // or preceded by whitespace and followed by punctuation (group 4)
+    g34: ((bPu || bWs) && !aWs && !aPu) || (bWs && aPu)
   };
 }
 
@@ -2078,7 +2085,7 @@ function scanInline(src, refs) {
         close = fl.right && (!fl.left || fl.aPu);
       }
       flushText();
-      nodes.push({ k: 'd', c: ch, n: m - i, len: m - i, open, close, g6: fl.g6 });
+      nodes.push({ k: 'd', c: ch, n: m - i, len: m - i, open, close, g6: fl.g6, g34: fl.g34, g56: fl.g56 });
       i = m;
       textStart = i;
       boundary = true;
@@ -2233,6 +2240,12 @@ function processEmphasis(nodes) {
     else if (nd.k === '/a') ld--;
     else if (nd.k === 'd') depthOf.set(nd, ld);
   }
+  // Emphasis already formed in this list (opener, closer, length used):
+  // a nested strong/em whose opener is group-3/4 and whose closer is
+  // group-5/6 can block an outer opener from closing (marked's emStrong
+  // m-accounting — the group-3 opener adds its length to m, the group-5/6
+  // closer is skipped by the odd-match rule, so m never reaches 0).
+  const formed = [];
   // Two passes, mirroring marked's preference for same-length matches:
   // first match runs of length >= 2 (strong), then runs of length 1 (em,
   // including leftovers from a run that gave up 2 delimiters to a strong).
@@ -2259,6 +2272,30 @@ function processEmphasis(nodes) {
               // odd-match rule: skip this opener
               if (O.open && O.close && D.open && D.close &&
                 (O.n + D.n) % 3 === 0 && O.n % 3 !== 0) continue;
+              // nested-strong block (m-accounting): a formed emphasis
+              // between O and D whose opener is group-3/4 and whose closer
+              // is group-5/6, with the odd-match rule skipping that closer,
+              // leaves m > 0, so D cannot close O. Only when the strong's
+              // opener/closer are the ONLY same-char runs between O and D
+              // (otherwise other runs change the accounting).
+              {
+                const oi2 = delims.indexOf(O), di2 = delims.indexOf(D);
+                let blocked = false;
+                for (const f of formed) {
+                  const fo = delims.indexOf(f.o), fc = delims.indexOf(f.c);
+                  if (fo <= oi2 || fc >= di2 || fo < 0 || fc < 0) continue;
+                  if (!f.o.g34 || !f.c.g56) continue;
+                  if (O.n % 3 !== 0 && (O.n + f.n) % 3 === 0) {
+                    let sameChar = 0;
+                    for (let q = oi2 + 1; q < di2; q++) {
+                      const X = delims[q];
+                      if (X.c === O.c && X.len > 0 && depthOf.get(X) === depthOf.get(O)) sameChar++;
+                    }
+                    if (sameChar === 2) { blocked = true; break; }
+                  }
+                }
+                if (blocked) continue;
+              }
               // same-length preference: if this opener has a later closer of
               // at least its length (so it can form a clean em/strong with a
               // same-length partner), do not let a closer of a different
@@ -2290,6 +2327,7 @@ function processEmphasis(nodes) {
           if (oi === -1) break;
           const O = stack[oi];
           const use = (O.n >= 2 && D.n >= 2) ? 2 : 1;
+          formed.push({ o: O, c: D, n: use });
           const oIdx = nodes.indexOf(O);
           nodes.splice(oIdx + 1, 0, { k: 'e', n: use });
           nodes.splice(nodes.indexOf(D), 0, { k: '/e', n: use });
