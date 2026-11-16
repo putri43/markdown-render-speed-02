@@ -1761,12 +1761,60 @@ function tryInlineTail(src, pos) {
   return { href: dest, title, end: m + 1 };
 }
 
+// Whether a link text matches marked's link-text pattern (the `re` used
+// in its link/reflink regexes): a sequence of nested brackets, escapes,
+// code spans, backticks before ']', and ordinary characters. The code-span
+// atom is `+(?!`)[^`]*?`+(?!`) — it takes the FIRST backtick run after the
+// opener as the closer, whatever its length, so a multi-backtick span
+// containing a shorter backtick run (e.g. `` `` a ` b `` ``) leaves the
+// rest of the text unmatchable and the whole link fails to form.
+function linkTextOk(t) {
+  let i = 0;
+  const n = t.length;
+  while (i < n) {
+    const c = t[i];
+    if (c === '[') {
+      let j = i + 1, depth = 1;
+      while (j < n) {
+        if (t[j] === '\\' && j + 1 < n) { j += 2; continue; }
+        if (t[j] === '[') depth++;
+        else if (t[j] === ']') { depth--; if (depth === 0) break; }
+        j++;
+      }
+      if (j >= n) return false;
+      i = j + 1;
+      continue;
+    }
+    if (c === '\\' && i + 1 < n) { i += 2; continue; }
+    if (c === '`') {
+      let m = i;
+      while (m < n && t[m] === '`') m++;
+      // backticks at the very end of the text match ``+(?=]) (they sit
+      // right before the closing ']') — but that atom needs TWO or more
+      // backticks; a single backtick at the end can only match the code
+      // span atom, whose closer lies past the ']', so the link fails
+      if (m === n) return m - i >= 2;
+      let k = m;
+      while (k < n && t[k] !== '`') k++;
+      if (k >= n) return false;
+      let e = k;
+      while (e < n && t[e] === '`') e++;
+      i = e;
+      continue;
+    }
+    if (c === ']') return false;
+    i++;
+  }
+  return true;
+}
+
 // Parse a link tail after ']' at src[pos]. `linkTextRaw` is the raw source
 // between the opener '[' and this ']'. Returns {href, title, end} (href and
 // title are the raw destination/title strings) or null. If the inline form
 // fails, the reference forms are tried instead.
 function parseLinkTail(src, pos, refs, linkTextRaw) {
   const n = src.length;
+  if (!linkTextOk(linkTextRaw)) return null;
   if (src[pos] === '(') {
     const inline = tryInlineTail(src, pos);
     if (inline) return inline;
@@ -1858,8 +1906,28 @@ function scanInline(src, refs) {
       let m = i;
       while (m < n && src[m] === '`') m++;
       const run = m - i;
+      // A code span inside link text cannot reach past the ']' that closes
+      // the innermost open link — but only when that link will actually
+      // form (its text matches marked's link-text pattern, so marked
+      // tokenizes the link first and scans its text separately). When the
+      // link text does not match (e.g. a lone backtick at its end), marked
+      // does not form the link and the code span may span past the ']'.
+      let limit = n;
+      if (openers.length > 0) {
+        let depth = 1, q = i;
+        while (q < n) {
+          if (src[q] === '\\' && q + 1 < n) { q += 2; continue; }
+          if (src[q] === '[') depth++;
+          else if (src[q] === ']') { depth--; if (depth === 0) { limit = q; break; } }
+          q++;
+        }
+        if (limit < n) {
+          const op = openers[openers.length - 1];
+          if (!linkTextOk(src.slice(op.pos + (op.img ? 2 : 1), limit))) limit = n;
+        }
+      }
       let j = m, close = -1;
-      while (j < n) {
+      while (j < limit) {
         if (src[j] === '`') {
           let k = j;
           while (k < n && src[k] === '`') k++;
