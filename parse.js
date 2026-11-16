@@ -14,6 +14,15 @@ const ENT = JSON.parse("{\"Aacute\":\"Á\",\"aacute\":\"á\",\"Abreve\":\"Ă\",\
 
 const SPACE = 32, TAB = 9, LF = 10, CR = 13;
 
+// Persistent inLink state (marked's lexer state): an inline opening <a>
+// tag (startATag /^<a /i) sets it, a closing </a> (endATag /^<\/a>/i)
+// clears it, and bare extended autolinks do not form while it is set. It
+// persists across blocks within one parse() call and is reset at the start
+// of parse(). HTML blocks never set it (their text is not inline-tokenized),
+// so only a multi-line <a> tag (one that is not a complete tag on its own
+// line, hence a paragraph) can leave inLink set for later paragraphs.
+let inLink = false;
+
 // ---- character classes -------------------------------------------------
 function isSpaceCh(c) { return c === 32 || c === 9 || c === 10 || c === 13 || c === 11 || c === 12; }
 // ASCII punctuation (CommonMark): !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
@@ -790,13 +799,17 @@ function parseHtmlBlock(lines, i, end, hb, out, ctx) {
       if (htmlBlockEnd(s, hb)) break;
     }
   }
-  // trailing newline: present iff the next line exists and is non-blank,
-  // or the block reaches the end of the (top-level) input which ends with
-  // '\n'. Nested content (a list item or blockquote) is lines joined with
-  // '\n' and never ends with one, so no trailing newline there.
+  // trailing newline: for types 1-5 (which end at a closing line) it is
+  // present iff the next line exists and has any characters at all — even
+  // just whitespace counts, only a truly empty next line means no trailing
+  // newline — or the block reaches the end of the (top-level) input which
+  // ends with '\n'. Type 6-7 blocks end at a blank line, so the next line
+  // is blank and there is never a trailing newline there. Nested content
+  // (a list item or blockquote) is lines joined with '\n' and never ends
+  // with one, so no trailing newline there.
   let text = parts.join('\n');
   if (j < end) {
-    if (!isBlankLine(lines[j].s)) text += '\n';
+    if (hb.type < 6 && lines[j].s.length > 0) text += '\n';
   } else if (ctx.endsWithNL) {
     text += '\n';
   }
@@ -1294,7 +1307,10 @@ function flanking(src, start, end) {
   return {
     left: !aWs && (!aPu || bWs || bPu),
     right: !bWs && (!bPu || aWs || aPu),
-    bPu, aPu
+    bPu, aPu,
+    // group-6 run (marked's emStrongRDelim regex): a non-whitespace,
+    // non-punctuation character on both sides of the run
+    g6: !bWs && !bPu && !aWs && !aPu
   };
 }
 
@@ -1603,7 +1619,10 @@ function scanHtmlTag(src, i) {
 }
 
 // Try to match a strikethrough delimiter at src[i] ('~'). Returns
-// {end, content} or null.
+// {end, content} or null. Marked matches `~` runs with a delimiter stack,
+// so an inner `~~...~~` pair balances before the outer closer: track a
+// depth of inner openers of the same length and only return a closer when
+// the depth is back to zero.
 function tryDel(src, i) {
   if (src[i + 1] === '~' && src[i + 2] === '~') return null;
   const n = src.length;
@@ -1614,13 +1633,22 @@ function tryDel(src, i) {
     if (c0 === '~' || isUnicodeWsCh(c0)) continue;
     let j = openEnd;
     let lastValid = false;
+    let depth = 0;
     while (j < n) {
       const ch = src[j];
       if (ch === '\\' && j + 1 < n) { j += 2; lastValid = true; continue; }
       if (ch === '~') {
         let k = j;
         while (k < n && src[k] === '~') k++;
-        if (k - j === nn && lastValid) return { end: k, content: src.slice(openEnd, j) };
+        if (k - j === nn) {
+          const fl = flanking(src, j, k);
+          if (fl.right && lastValid) {
+            if (depth === 0) return { end: k, content: src.slice(openEnd, j) };
+            depth--;
+          } else if (fl.left) {
+            depth++;
+          }
+        }
         j = k;
         lastValid = false;
         continue;
@@ -1834,6 +1862,10 @@ function scanInline(src, refs) {
       const tagEnd = scanHtmlTag(src, i);
       if (tagEnd !== -1) {
         flushText();
+        // marked's tag tokenizer updates inLink: <a␣ opens, </a> closes
+        const t1 = src.charCodeAt(i + 1);
+        if (!inLink && (t1 === 97 || t1 === 65) && src.charCodeAt(i + 2) === 32) inLink = true;
+        else if (inLink && t1 === 47 && (src.charCodeAt(i + 2) === 97 || src.charCodeAt(i + 2) === 65) && src.charCodeAt(i + 3) === 62) inLink = false;
         nodes.push({ k: 'h', s: src.slice(i, tagEnd) });
         i = tagEnd;
         textStart = i;
@@ -1928,7 +1960,7 @@ function scanInline(src, refs) {
         close = fl.right && (!fl.left || fl.aPu);
       }
       flushText();
-      nodes.push({ k: 'd', c: ch, n: m - i, open, close });
+      nodes.push({ k: 'd', c: ch, n: m - i, len: m - i, open, close, g6: fl.g6 });
       i = m;
       textStart = i;
       boundary = true;
@@ -1981,7 +2013,7 @@ function scanInline(src, refs) {
     // extended autolinks: scheme, www., mailto:/xmpp:, email — none of them
     // form inside an active link/image opener (marked's inLink), so a bare
     // URL cannot swallow the ']' that closes the link text
-    if ((code === 104 || code === 72 || code === 102 || code === 70) && openers.length === 0) {
+    if ((code === 104 || code === 72 || code === 102 || code === 70) && openers.length === 0 && !inLink) {
       // http://, https://, ftp:// (case-insensitive)
       let schemeLen = 0;
       if (src.slice(i, i + 7).toLowerCase() === 'http://') schemeLen = 7;
@@ -2000,7 +2032,7 @@ function scanInline(src, refs) {
         }
       }
     }
-    if (code === 119 && src[i + 1] === 'w' && src[i + 2] === 'w' && src[i + 3] === '.' && openers.length === 0) {
+    if (code === 119 && src[i + 1] === 'w' && src[i + 2] === 'w' && src[i + 3] === '.' && openers.length === 0 && !inLink) {
       if (boundary || src[i - 1] === ' ' || src[i - 1] === '\t' || src[i - 1] === '\n' || src[i - 1] === '(') {
         const u = tryExtUrl(src, i, i + 4, 'www');
         if (u) {
@@ -2014,7 +2046,7 @@ function scanInline(src, refs) {
         }
       }
     }
-    if ((code === 109 || code === 120) && openers.length === 0) {
+    if ((code === 109 || code === 120) && openers.length === 0 && !inLink) {
       // mailto: / xmpp: (lowercase only), not after an alphanumeric
       let preLen = 0, mailto = false;
       if (src.slice(i, i + 7) === 'mailto:') { preLen = 7; mailto = true; }
@@ -2047,7 +2079,7 @@ function scanInline(src, refs) {
       }
     }
     // bare email (only at the start of a maximal narrow-local run)
-    if (isNarrowLocal(code) && (i === 0 || !isNarrowLocal(src.charCodeAt(i - 1))) && openers.length === 0) {
+    if (isNarrowLocal(code) && (i === 0 || !isNarrowLocal(src.charCodeAt(i - 1))) && openers.length === 0 && !inLink) {
       const em = matchEmail(src, i);
       if (em) {
         const text = src.slice(i, em.end);
@@ -2112,20 +2144,21 @@ function processEmphasis(nodes) {
               // same-length preference: if this opener has a later closer of
               // at least its length (so it can form a clean em/strong with a
               // same-length partner), do not let a closer of a different
-              // length steal it. A later closer only counts if it is not
-              // already claimed by the openers after this closer and before
-              // it (their lengths sum to at least the closer's length, so
-              // they will consume it, possibly split among them).
+              // length steal it. A later closer only counts if it is a pure
+              // closer (it cannot open, so it will not be used as an opener
+              // for a following closer) and it is not already claimed by the
+              // pure openers after this closer and before it (their lengths
+              // sum to at least the closer's length, so they will consume it).
               if (O.n !== D.n) {
                 let hasLater = false;
                 for (let q = di + 1; q < delims.length; q++) {
                   const C2 = delims[q];
-                  if (C2.c !== O.c || !C2.close || C2.n < O.n || C2.n === 0 ||
+                  if (C2.c !== O.c || !C2.close || C2.open || C2.n < O.n || C2.n === 0 ||
                     depthOf.get(C2) !== depthOf.get(O)) continue;
                   let openSum = 0;
                   for (let r = di + 1; r < q; r++) {
                     const O2 = delims[r];
-                    if (O2.c === C2.c && O2.open && O2.n > 0 &&
+                    if (O2.c === C2.c && O2.open && !O2.close && O2.n > 0 &&
                       depthOf.get(O2) === depthOf.get(C2)) openSum += O2.n;
                   }
                   if (openSum < C2.n) { hasLater = true; break; }
@@ -2297,6 +2330,7 @@ function renderBlocks(nodes, refs) {
 
 // ---- entry point ---------------------------------------------------------
 export function parse(markdown) {
+  inLink = false;
   const src = markdown.replace(/\r\n?/g, '\n');
   const lines = src.split('\n');
   // a trailing newline does not add a line (it is the line terminator)
