@@ -2408,7 +2408,7 @@ function processEmphasis(nodes) {
                 for (const f of formed) {
                   const fo = delims.indexOf(f.o), fc = delims.indexOf(f.c);
                   if (fo <= oi2 || fc >= di2 || fo < 0 || fc < 0) continue;
-                  if (!f.o.g34 || !f.c.g56) continue;
+                  if (f.n !== 2 || !f.o.g34 || !f.c.g56) continue;
                   if (O.n % 3 !== 0 && (O.n + f.n) % 3 === 0) {
                     let sameChar = 0;
                     for (let q = oi2 + 1; q < di2; q++) {
