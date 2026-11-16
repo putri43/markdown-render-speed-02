@@ -751,9 +751,12 @@ function parseIndentedCode(lines, i, end, out) {
   return j;
 }
 
-// Fenced code. fence = {ch, n, info, indentChars}.
+// Fenced code. fence = {ch, n, info, indentChars}. Marked's
+// indentCodeCompensation regex is /^(\s+)(?:```)/ — it only matches a
+// backtick fence, so a tilde fence never strips leading indent from its
+// content lines.
 function parseFencedCode(lines, i, end, fence, out) {
-  const strip = fence.indentChars;
+  const strip = fence.ch === '`' ? fence.indentChars : 0;
   const parts = [];
   let j = i + 1;
   while (j < end) {
@@ -1237,7 +1240,10 @@ function parseTable(lines, j, end, headerLine, aligns, refs, ctx) {
   let k = j + 1;
   while (k < end) {
     const s = lines[k].s;
-    if (isBlankLine(s)) break;
+    // marked's table body ends only at a line of spaces (or empty) — the
+    // body-row lookahead is (?! *\n|...), so a line containing a tab is a
+    // body row (an empty row), not a blank line ending the table
+    if (/^ *$/.test(s)) break;
     const info = leadingWsInfo(s);
     if (info.col <= 3) {
       const idx = info.idx;
