@@ -2430,6 +2430,19 @@ function processEmphasis(nodes) {
               // sum to at least the closer's length, so they will consume it).
               if (O.n !== D.n) {
                 let hasLater = false;
+                // O is enclosed by another opener O2 on the stack (same
+                // char, before O) that D can match: if D does not match O
+                // it will match O2, trapping O inside, so no later closer
+                // can ever be O's partner — do not block this match
+                let enclosed = false;
+                const oiO = delims.indexOf(O);
+                for (let s2 = 0; s2 < stack.length; s2++) {
+                  const O2 = stack[s2];
+                  if (O2 === O || O2.c !== D.c || !O2.open || O2.n === 0) continue;
+                  if (depthOf.get(O2) !== depthOf.get(O)) continue;
+                  if (delims.indexOf(O2) < oiO) { enclosed = true; break; }
+                }
+                if (!enclosed) {
                 for (let q = di + 1; q < delims.length; q++) {
                   const C2 = delims[q];
                   if (C2.c !== O.c || !C2.close || C2.open || C2.n < O.n || C2.n === 0 ||
@@ -2442,6 +2455,7 @@ function processEmphasis(nodes) {
                   }
                   if (openSum < C2.n) { hasLater = true; break; }
                 }
+                }
                 if (hasLater) continue;
               }
               oi = s;
@@ -2451,10 +2465,11 @@ function processEmphasis(nodes) {
           if (oi === -1) break;
           const O = stack[oi];
           const use = (O.n >= 2 && D.n >= 2) ? 2 : 1;
-          formed.push({ o: O, c: D, n: use });
           const oIdx = nodes.indexOf(O);
           nodes.splice(oIdx + 1, 0, { k: 'e', n: use });
-          nodes.splice(nodes.indexOf(D), 0, { k: '/e', n: use });
+          const cm = { k: '/e', n: use };
+          nodes.splice(nodes.indexOf(D), 0, cm);
+          formed.push({ o: O, c: D, n: use, cm });
           O.n -= use;
           D.n -= use;
           if (O.n === 0) stack.splice(oi, 1);
@@ -2471,6 +2486,34 @@ function processEmphasis(nodes) {
         }
       }
       if (D.open && D.n > 0 && D.n >= minN) stack.push(D);
+    }
+  }
+  // A closer run that was partially consumed leaves its leftover asterisks
+  // as literal text. When the emphasis it closed contains a formed inner
+  // emphasis, those asterisks are the FIRST ones in the run (the closer
+  // used the LAST ones), so they belong inside, before the closing
+  // marker. When the emphasis contains only plain text, the leftover
+  // stays outside (cm-443/446). Distinguish by whether another formed
+  // match sits strictly between this match's opener and closer.
+  {
+    const ownClose = new Map();
+    for (const f of formed) ownClose.set(f.c, f);
+    for (let i = 1; i < nodes.length; i++) {
+      const nd = nodes[i];
+      if (nd.k !== 'd' || nd.n <= 0) continue;
+      const f = ownClose.get(nd);
+      if (!f || f.cm !== nodes[i - 1] || f.n !== 2) continue;
+      const oi2 = delims.indexOf(f.o), di2 = delims.indexOf(f.c);
+      let hasInner = false;
+      for (const g of formed) {
+        if (g === f) continue;
+        const go = delims.indexOf(g.o), gc = delims.indexOf(g.c);
+        if (go > oi2 && gc < di2 && go >= 0 && gc >= 0) { hasInner = true; break; }
+      }
+      if (hasInner) {
+        nodes.splice(i, 1);
+        nodes.splice(i - 1, 0, nd);
+      }
     }
   }
 }
