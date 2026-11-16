@@ -776,7 +776,7 @@ function parseFencedCode(lines, i, end, fence, out) {
   // drop at most one trailing empty line (a whitespace-only line is kept)
   if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
   let text = parts.join('\n');
-  if (text.length > 0) text += '\n';
+  if (parts.length > 0) text += '\n';
   let lang = null;
   if (fence.info.length > 0) {
     const sp = fence.info.search(/[ \t]/);
