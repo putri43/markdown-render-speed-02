@@ -63,7 +63,9 @@ function isWsCp(cp) {
 
 // ---- escaping ----------------------------------------------------------
 // Text escape (marked's escape with encode): & < > " ' are always escaped.
+const NEED_ESC_RE = /[&<>"']/;
 function escText(s) {
+  if (!NEED_ESC_RE.test(s)) return s;
   let out = '', start = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
@@ -80,14 +82,15 @@ function escText(s) {
 // Attribute escape (marked's escape without encode): < > " ' always, and &
 // only when it does not start a valid entity reference (&name; / &#123; /
 // &#x1a;). Used for hrefs and titles, whose raw text keeps entities intact.
-const ENT_REF_RE = /^(?:#\d{1,7}|#[Xx][0-9A-Fa-f]{1,6}|\w+);/;
+// The entity check is done by hand (no regex/slice per '&').
 function escAttr(s) {
+  if (!NEED_ESC_RE.test(s)) return s;
   let out = '', start = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     let rep = null;
     if (c === 38) {
-      if (!ENT_REF_RE.test(s.slice(i + 1))) rep = '&amp;';
+      if (!isEntityRef(s, i + 1)) rep = '&amp;';
     } else if (c === 60) rep = '&lt;';
     else if (c === 62) rep = '&gt;';
     else if (c === 34) rep = '&quot;';
@@ -96,6 +99,33 @@ function escAttr(s) {
   }
   return start === 0 ? s : out + s.slice(start);
 }
+// Is s[j..] a valid entity reference body (up to and including ';')?
+// &#\d{1,7}; | &#x[0-9a-fA-F]{1,6}; | &\w+;
+function isEntityRef(s, j) {
+  const n = s.length;
+  if (j >= n) return false;
+  let k = j;
+  if (s.charCodeAt(k) === 35) { // '#'
+    k++;
+    if (k < n && (s.charCodeAt(k) === 120 || s.charCodeAt(k) === 88)) { // x/X
+      k++;
+      const st = k;
+      while (k < n && isHex(s.charCodeAt(k))) k++;
+      if (k - st < 1 || k - st > 6) return false;
+    } else {
+      const st = k;
+      while (k < n && s.charCodeAt(k) >= 48 && s.charCodeAt(k) <= 57) k++;
+      if (k - st < 1 || k - st > 7) return false;
+    }
+    return k < n && s.charCodeAt(k) === 59;
+  }
+  const st = k;
+  while (k < n && isWordChar(s.charCodeAt(k))) k++;
+  if (k === st) return false;
+  return k < n && s.charCodeAt(k) === 59;
+}
+function isHex(c) { return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102); }
+function isWordChar(c) { return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95; }
 // A link destination: unescape backslash-escaped punctuation, percent-encode
 // with encodeURI (marked does not sanitise schemes; a literal % stays %),
 // then attribute-escape. Returns null when encodeURI throws (lone
@@ -1397,9 +1427,12 @@ function matchEmail(src, i) {
   let labels = 0;
   // whether a '_' emphasis opener precedes this email in the source: only
   // then can a trailing '_' run be an emphasis delimiter (which marked
-  // consumes before matching the email inside the emphasis content)
-  let hasUndOpener = false;
-  {
+  // consumes before matching the email inside the emphasis content).
+  // Computed lazily — only when a domain label actually ends in '_'.
+  let hasUndOpener = null;
+  const getUndOpener = () => {
+    if (hasUndOpener !== null) return hasUndOpener;
+    hasUndOpener = false;
     let b = i - 1;
     const floor = Math.max(0, i - 1000);
     while (b >= floor) {
@@ -1411,7 +1444,8 @@ function matchEmail(src, i) {
         b = a;
       } else b--;
     }
-  }
+    return hasUndOpener;
+  };
   while (k < n && src[k] === '.') {
     let m = k + 1;
     while (m < n) {
@@ -1427,7 +1461,7 @@ function matchEmail(src, i) {
     // opener precedes the email.
     if (m === k + 1) break;
     if (!isAlnum(src.charCodeAt(m - 1))) {
-      if (hasUndOpener && src.charCodeAt(m - 1) === 95) {
+      if (getUndOpener() && src.charCodeAt(m - 1) === 95) {
         let e = m;
         while (e > k + 1 && src.charCodeAt(e - 1) === 95) e--;
         if (e === k + 1 || !isAlnum(src.charCodeAt(e - 1))) break;
@@ -1888,13 +1922,7 @@ function scanInline(src, refs) {
   // active, so it cannot swallow the ']' that closes a link that will
   // form.
   const openerHasLink = () => {
-    if (openers.length === 0) return false;
-    const op = openers[openers.length - 1];
-    const opIdx = nodes.indexOf(op);
-    for (let q = opIdx + 1; q < nodes.length; q++) {
-      if (nodes[q].k === 'a') return true;
-    }
-    return false;
+    return openers.length > 0 && openers[openers.length - 1].hasLink === true;
   };
   const pushRaw = (upto) => { if (upto > textStart) textBuf += src.slice(textStart, upto); };
   const flushText = () => {
@@ -2027,7 +2055,7 @@ function scanInline(src, refs) {
     if (code === 91 || (code === 33 && src[i + 1] === '[')) {
       flushText();
       const img = code === 33;
-      const op = { k: 'o', img, pos: img ? i : i, active: true };
+      const op = { k: 'o', img, pos: img ? i : i, active: true, hasLink: false };
       nodes.push(op);
       openers.push(op);
       i += img ? 2 : 1;
@@ -2079,6 +2107,9 @@ function scanInline(src, refs) {
               openers[q].active = false;
               openers.splice(q, 1);
             }
+            // every opener still open contains this link in its text, so
+            // it can never form (nested links are blocked)
+            for (const o2 of openers) o2.hasLink = true;
             i = tail.end;
             textStart = i;
             boundary = true;
@@ -2279,11 +2310,24 @@ function scanInline(src, refs) {
     // safe. When the extent does contain ']' the autolink is suppressed
     // while an opener is active, to protect a link that may form.
     if ((code === 104 || code === 72 || code === 102 || code === 70) && !inLink) {
-      // http://, https://, ftp:// (case-insensitive)
+      // http://, https://, ftp:// (case-insensitive) — checked by
+      // char code, not by slicing + lowercasing a prefix
       let schemeLen = 0;
-      if (src.slice(i, i + 7).toLowerCase() === 'http://') schemeLen = 7;
-      else if (src.slice(i, i + 8).toLowerCase() === 'https://') schemeLen = 8;
-      else if (src.slice(i, i + 6).toLowerCase() === 'ftp://') schemeLen = 6;
+      const c1 = src.charCodeAt(i + 1), c2 = src.charCodeAt(i + 2),
+        c3 = src.charCodeAt(i + 3);
+      if ((code === 104 || code === 72) && (c1 === 116 || c1 === 84) &&
+        (c2 === 116 || c2 === 84) && (c3 === 112 || c3 === 80)) {
+        // http:// (i+4 ':' i+5 '/' i+6 '/') or
+        // https:// (i+4 's' i+5 ':' i+6 '/' i+7 '/')
+        const c4 = src.charCodeAt(i + 4);
+        if (c4 === 58 && src.charCodeAt(i + 5) === 47 && src.charCodeAt(i + 6) === 47) schemeLen = 7;
+        else if ((c4 === 115 || c4 === 83) && src.charCodeAt(i + 5) === 58 &&
+          src.charCodeAt(i + 6) === 47 && src.charCodeAt(i + 7) === 47) schemeLen = 8;
+      } else if ((code === 102 || code === 70) && (c1 === 116 || c1 === 84) &&
+        (c2 === 112 || c2 === 80) && c3 === 58 &&
+        src.charCodeAt(i + 4) === 47 && src.charCodeAt(i + 5) === 47) {
+        schemeLen = 6;
+      }
       if (schemeLen > 0) {
         const u = tryExtUrl(src, i, i + schemeLen, 'scheme');
         if (u && (openers.length === 0 || openerHasLink() || u.text.indexOf(']') === -1)) {
@@ -2314,8 +2358,11 @@ function scanInline(src, refs) {
     if ((code === 109 || code === 120) && !inLink) {
       // mailto: / xmpp: (lowercase only), not after an alphanumeric
       let preLen = 0, mailto = false;
-      if (src.slice(i, i + 7) === 'mailto:') { preLen = 7; mailto = true; }
-      else if (src.slice(i, i + 5) === 'xmpp:') { preLen = 5; mailto = false; }
+      if (code === 109 && src.charCodeAt(i + 1) === 97 && src.charCodeAt(i + 2) === 105 &&
+        src.charCodeAt(i + 3) === 108 && src.charCodeAt(i + 4) === 116 &&
+        src.charCodeAt(i + 5) === 111 && src.charCodeAt(i + 6) === 58) { preLen = 7; mailto = true; }
+      else if (code === 120 && src.charCodeAt(i + 1) === 109 && src.charCodeAt(i + 2) === 112 &&
+        src.charCodeAt(i + 3) === 112 && src.charCodeAt(i + 4) === 58) { preLen = 5; mailto = false; }
       if (preLen > 0 && (boundary || !isAlnum(src.charCodeAt(i - 1)))) {
         const em = matchEmail(src, i + preLen);
         if (em) {
@@ -2568,33 +2615,33 @@ function plainText(nodes, from, to) {
 }
 
 function renderNodes(nodes) {
-  let out = '';
+  const parts = [];
   for (const nd of nodes) {
     switch (nd.k) {
-      case 't': out += escAttr(nd.s); break;
-      case 'c': out += '<code>' + escText(nd.s) + '</code>'; break;
-      case 'h': case 'u': out += nd.s; break;
+      case 't': parts.push(escAttr(nd.s)); break;
+      case 'c': parts.push('<code>' + escText(nd.s) + '</code>'); break;
+      case 'h': case 'u': parts.push(nd.s); break;
       case 'a':
         if (!nd.bad) {
-          out += '<a href="' + nd.href + '"';
-          if (nd.title !== null) out += ' title="' + nd.title + '"';
-          out += '>';
+          parts.push('<a href="' + nd.href + '"');
+          if (nd.title !== null) parts.push(' title="' + nd.title + '"');
+          parts.push('>');
         }
         break;
-      case '/a': if (!nd.bad) out += '</a>'; break;
+      case '/a': if (!nd.bad) parts.push('</a>'); break;
       case 'i':
-        out += '<img src="' + nd.href + '" alt="' + escAttr(nd.alt) + '"';
-        if (nd.title !== null) out += ' title="' + nd.title + '"';
-        out += '>';
+        parts.push('<img src="' + nd.href + '" alt="' + escAttr(nd.alt) + '"');
+        if (nd.title !== null) parts.push(' title="' + nd.title + '"');
+        parts.push('>');
         break;
-      case 'd': if (nd.n > 0) out += nd.c.repeat(nd.n); break;
-      case 'e': out += nd.n === 2 ? '<strong>' : '<em>'; break;
-      case '/e': out += nd.n === 2 ? '</strong>' : '</em>'; break;
-      case 'b': out += '<br>'; break;
-      case 'o': out += nd.img ? '![' : '['; break;
+      case 'd': if (nd.n > 0) parts.push(nd.c.repeat(nd.n)); break;
+      case 'e': parts.push(nd.n === 2 ? '<strong>' : '<em>'); break;
+      case '/e': parts.push(nd.n === 2 ? '</strong>' : '</em>'); break;
+      case 'b': parts.push('<br>'); break;
+      case 'o': parts.push(nd.img ? '![' : '['); break;
     }
   }
-  return out;
+  return parts.join('');
 }
 
 function renderInline(src, refs) {
