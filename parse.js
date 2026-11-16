@@ -2268,10 +2268,14 @@ function scanInline(src, refs) {
       boundary = false;
       continue;
     }
-    // extended autolinks: scheme, www., mailto:/xmpp:, email — none of them
-    // form inside an active link/image opener (marked's inLink), so a bare
-    // URL cannot swallow the ']' that closes the link text
-    if ((code === 104 || code === 72 || code === 102 || code === 70) && bareOk()) {
+    // extended autolinks: scheme, www., mailto:/xmpp:, email. A bare URL
+    // inside an active link/image opener may still form when its matched
+    // extent contains no ']' (so it cannot swallow the ']' that closes
+    // the link text); the ']' handler converts bare autolinks inside a
+    // formed link's text back to plain text, so forming tentatively is
+    // safe. When the extent does contain ']' the autolink is suppressed
+    // while an opener is active, to protect a link that may form.
+    if ((code === 104 || code === 72 || code === 102 || code === 70) && !inLink) {
       // http://, https://, ftp:// (case-insensitive)
       let schemeLen = 0;
       if (src.slice(i, i + 7).toLowerCase() === 'http://') schemeLen = 7;
@@ -2279,7 +2283,7 @@ function scanInline(src, refs) {
       else if (src.slice(i, i + 6).toLowerCase() === 'ftp://') schemeLen = 6;
       if (schemeLen > 0) {
         const u = tryExtUrl(src, i, i + schemeLen, 'scheme');
-        if (u) {
+        if (u && (openers.length === 0 || openerHasLink() || u.text.indexOf(']') === -1)) {
           flushText();
           const html = autolinkHtml(u.href, u.text);
           nodes.push(html === null ? { k: 'h', s: escText(u.text) } : { k: 'u', s: html, txt: u.text, bare: true });
@@ -2290,10 +2294,10 @@ function scanInline(src, refs) {
         }
       }
     }
-    if (code === 119 && src[i + 1] === 'w' && src[i + 2] === 'w' && src[i + 3] === '.' && bareOk()) {
+    if (code === 119 && src[i + 1] === 'w' && src[i + 2] === 'w' && src[i + 3] === '.' && !inLink) {
       if (boundary || src[i - 1] === ' ' || src[i - 1] === '\t' || src[i - 1] === '\n' || src[i - 1] === '(') {
         const u = tryExtUrl(src, i, i + 4, 'www');
-        if (u) {
+        if (u && (openers.length === 0 || openerHasLink() || u.text.indexOf(']') === -1)) {
           flushText();
           const html = autolinkHtml(u.href, u.text);
           nodes.push(html === null ? { k: 'h', s: escText(u.text) } : { k: 'u', s: html, txt: u.text, bare: true });
@@ -2304,7 +2308,7 @@ function scanInline(src, refs) {
         }
       }
     }
-    if ((code === 109 || code === 120) && bareOk()) {
+    if ((code === 109 || code === 120) && !inLink) {
       // mailto: / xmpp: (lowercase only), not after an alphanumeric
       let preLen = 0, mailto = false;
       if (src.slice(i, i + 7) === 'mailto:') { preLen = 7; mailto = true; }
@@ -2326,28 +2330,32 @@ function scanInline(src, refs) {
             }
           }
           const text = src.slice(i, end);
-          flushText();
-          const html = autolinkHtml(text, text);
-          nodes.push(html === null ? { k: 'h', s: escText(text) } : { k: 'u', s: html, txt: text, bare: true });
-          i = end;
-          textStart = i;
-          boundary = true;
-          continue;
+          if (openers.length === 0 || openerHasLink() || text.indexOf(']') === -1) {
+            flushText();
+            const html = autolinkHtml(text, text);
+            nodes.push(html === null ? { k: 'h', s: escText(text) } : { k: 'u', s: html, txt: text, bare: true });
+            i = end;
+            textStart = i;
+            boundary = true;
+            continue;
+          }
         }
       }
     }
     // bare email (only at the start of a maximal narrow-local run)
-    if (isNarrowLocal(code) && (i === 0 || !isNarrowLocal(src.charCodeAt(i - 1))) && bareOk()) {
+    if (isNarrowLocal(code) && (i === 0 || !isNarrowLocal(src.charCodeAt(i - 1))) && !inLink) {
       const em = matchEmail(src, i);
       if (em) {
         const text = src.slice(i, em.end);
-        flushText();
-        const html = autolinkHtml('mailto:' + text, text);
-        nodes.push(html === null ? { k: 'h', s: escText(text) } : { k: 'u', s: html, txt: text, bare: true });
-        i = em.end;
-        textStart = i;
-        boundary = true;
-        continue;
+        if (openers.length === 0 || openerHasLink() || text.indexOf(']') === -1) {
+          flushText();
+          const html = autolinkHtml('mailto:' + text, text);
+          nodes.push(html === null ? { k: 'h', s: escText(text) } : { k: 'u', s: html, txt: text, bare: true });
+          i = em.end;
+          textStart = i;
+          boundary = true;
+          continue;
+        }
       }
     }
     // plain character
