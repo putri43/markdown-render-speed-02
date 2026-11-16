@@ -2067,6 +2067,55 @@ function scanInline(src, refs) {
           // this opener cannot form a link
           op.active = false;
           openers.pop();
+          // marked's emStrong mask treats a `[...](...)` that looks like a
+          // link (its blockSkip pattern, which allows spaces in the
+          // destination and code spans in the label) as masked even when
+          // the real link does not form, so emphasis delimiters inside its
+          // text stay literal (e.g. `[foo *bar*](not a link)`). If this
+          // ']' is immediately followed by '(' with a closing ')' later
+          // and the label has no unescaped '[' outside code spans, turn
+          // the delimiter nodes inside the link text into plain text.
+          if (src[i + 1] === '(') {
+            let depth = 0, j = i + 1, closed = false;
+            while (j < n) {
+              if (src[j] === '\\' && j + 1 < n) { j += 2; continue; }
+              if (src[j] === '(') depth++;
+              else if (src[j] === ')') { depth--; if (depth === 0) { closed = true; break; } }
+              j++;
+            }
+            if (closed) {
+              let hasBracket = false, k = 0;
+              const label = linkTextRaw;
+              while (k < label.length) {
+                if (label[k] === '\\' && k + 1 < label.length) { k += 2; continue; }
+                if (label[k] === '`') {
+                  let m2 = k;
+                  while (m2 < label.length && label[m2] === '`') m2++;
+                  const run = m2 - k;
+                  let c2 = -1, q = m2;
+                  while (q < label.length) {
+                    if (label[q] === '`') {
+                      let e2 = q;
+                      while (e2 < label.length && label[e2] === '`') e2++;
+                      if (e2 - q === run) { c2 = q; break; }
+                      q = e2;
+                    } else q++;
+                  }
+                  if (c2 >= 0) { k = c2 + run; continue; }
+                  k = m2;
+                  continue;
+                }
+                if (label[k] === '[') { hasBracket = true; break; }
+                k++;
+              }
+              if (!hasBracket) {
+                const opIdx = nodes.indexOf(op);
+                for (let q = opIdx + 1; q < nodes.length; q++) {
+                  if (nodes[q].k === 'd') nodes[q] = { k: 't', s: nodes[q].c.repeat(nodes[q].len) };
+                }
+              }
+            }
+          }
         }
       }
       if (!formed) { i++; boundary = false; }
