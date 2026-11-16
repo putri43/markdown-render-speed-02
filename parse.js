@@ -1874,6 +1874,13 @@ function scanInline(src, refs) {
   let boundary = true;
   const n = src.length;
   let i = 0;
+  // Suppression intervals [start,end) from dangling backticks in a formed
+  // link's text (marked's emStrong mask): a backtick run in link text with
+  // no matching closer inside the text pairs with the next same-length run
+  // after the link, and emphasis delimiters between them stay literal.
+  // Filled in by the ']' handler when a link forms; checked by the
+  // emphasis/strikethrough handlers below.
+  const suppress = [];
   const pushRaw = (upto) => { if (upto > textStart) textBuf += src.slice(textStart, upto); };
   const flushText = () => {
     pushRaw(i);
@@ -2061,6 +2068,46 @@ function scanInline(src, refs) {
             textStart = i;
             boundary = true;
             formed = true;
+            // dangling backticks in this link's text: a backtick run with
+            // no matching closer inside the text pairs with the next
+            // same-length run after the link (marked's emStrong mask), and
+            // emphasis delimiters between them stay literal
+            {
+              const textStartPos = op.pos + (op.img ? 2 : 1);
+              const open = new Map();
+              let p = 0;
+              while (p < linkTextRaw.length) {
+                if (linkTextRaw[p] !== '`') { p++; continue; }
+                let q = p;
+                while (q < linkTextRaw.length && linkTextRaw[q] === '`') q++;
+                const run = q - p;
+                const st = open.get(run);
+                if (st && st.length > 0) st.pop();
+                else {
+                  if (!open.has(run)) open.set(run, []);
+                  open.get(run).push(p);
+                }
+                p = q;
+              }
+              for (const [run, poss] of open) {
+                for (const off of poss) {
+                  const dPos = textStartPos + off;
+                  // next backtick run after the link: must be the same
+                  // length, with no backtick between
+                  let r = tail.end, nextPos = -1, nextLen = 0;
+                  while (r < n) {
+                    if (src[r] === '`') {
+                      let e2 = r;
+                      while (e2 < n && src[e2] === '`') e2++;
+                      nextPos = r; nextLen = e2 - r;
+                      break;
+                    }
+                    r++;
+                  }
+                  if (nextPos >= 0 && nextLen === run) suppress.push([dPos, nextPos + nextLen]);
+                }
+              }
+            }
           }
         }
         if (!formed) {
@@ -2126,6 +2173,12 @@ function scanInline(src, refs) {
       const ch = code === 42 ? '*' : '_';
       let m = i;
       while (m < n && src[m] === ch) m++;
+      // inside a dangling-backtick suppression interval: literal text
+      let sup = false;
+      for (let s2 = 0; s2 < suppress.length; s2++) {
+        if (i >= suppress[s2][0] && i < suppress[s2][1]) { sup = true; break; }
+      }
+      if (sup) { i = m; boundary = false; continue; }
       const fl = flanking(src, i, m);
       let open, close;
       if (ch === '*') { open = fl.left; close = fl.right; }
@@ -2142,6 +2195,12 @@ function scanInline(src, refs) {
     }
     // strikethrough
     if (code === 126) {
+      // inside a dangling-backtick suppression interval: literal text
+      let sup = false;
+      for (let s2 = 0; s2 < suppress.length; s2++) {
+        if (i >= suppress[s2][0] && i < suppress[s2][1]) { sup = true; break; }
+      }
+      if (sup) { i++; boundary = false; continue; }
       const del = tryDel(src, i);
       if (del) {
         flushText();
