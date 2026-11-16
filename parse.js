@@ -2098,8 +2098,17 @@ function scanInline(src, refs) {
                 while (q < linkTextRaw.length && linkTextRaw[q] === '`') q++;
                 const run = q - p;
                 const st = open.get(run);
-                if (st && st.length > 0) st.pop();
-                else {
+                if (st && st.length > 0) {
+                  // this run closes a code span opened by the matching
+                  // run; any runs pushed after that opener are inside the
+                  // code span's content, not dangling, so drop them
+                  const openerPos = st.pop();
+                  for (const [r2, poss2] of open) {
+                    for (let k = poss2.length - 1; k >= 0; k--) {
+                      if (poss2[k] > openerPos) poss2.splice(k, 1);
+                    }
+                  }
+                } else {
                   if (!open.has(run)) open.set(run, []);
                   open.get(run).push(p);
                 }
