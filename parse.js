@@ -2092,19 +2092,19 @@ function scanInline(src, refs) {
               for (const [run, poss] of open) {
                 for (const off of poss) {
                   const dPos = textStartPos + off;
-                  // next backtick run after the link: must be the same
-                  // length, with no backtick between
-                  let r = tail.end, nextPos = -1, nextLen = 0;
+                  // next backtick run of the SAME length after the link
+                  // (marked's code-span pattern allows backticks of other
+                  // lengths inside the content, so skip those runs)
+                  let r = tail.end, nextPos = -1;
                   while (r < n) {
                     if (src[r] === '`') {
                       let e2 = r;
                       while (e2 < n && src[e2] === '`') e2++;
-                      nextPos = r; nextLen = e2 - r;
-                      break;
-                    }
-                    r++;
+                      if (e2 - r === run) { nextPos = r; break; }
+                      r = e2;
+                    } else r++;
                   }
-                  if (nextPos >= 0 && nextLen === run) suppress.push([dPos, nextPos + nextLen]);
+                  if (nextPos >= 0) suppress.push([dPos, nextPos + run]);
                 }
               }
             }
