@@ -1382,6 +1382,23 @@ function matchEmail(src, i) {
   }
   if (k === j + 1) return null;
   let labels = 0;
+  // whether a '_' emphasis opener precedes this email in the source: only
+  // then can a trailing '_' run be an emphasis delimiter (which marked
+  // consumes before matching the email inside the emphasis content)
+  let hasUndOpener = false;
+  {
+    let b = i - 1;
+    const floor = Math.max(0, i - 1000);
+    while (b >= floor) {
+      if (src[b] === '_') {
+        let a = b;
+        while (a >= floor && src[a] === '_') a--;
+        const fl = flanking(src, a + 1, b + 1);
+        if (fl.left) { hasUndOpener = true; break; }
+        b = a;
+      } else b--;
+    }
+  }
   while (k < n && src[k] === '.') {
     let m = k + 1;
     while (m < n) {
@@ -1390,16 +1407,43 @@ function matchEmail(src, i) {
       else break;
     }
     // no label after the dot, or a label not ending in an alnum: the
-    // domain ends before this dot (a trailing '.' is not part of it)
+    // domain ends before this dot (a trailing '.' is not part of it).
+    // Exception: a label ending in '_' may end at an emphasis delimiter
+    // (e.g. an email inside __...__): backtrack over the trailing '_'
+    // run and take the label up to its last alnum, but only when a '_'
+    // opener precedes the email.
     if (m === k + 1) break;
-    if (!isAlnum(src.charCodeAt(m - 1))) break;
+    if (!isAlnum(src.charCodeAt(m - 1))) {
+      if (hasUndOpener && src.charCodeAt(m - 1) === 95) {
+        let e = m;
+        while (e > k + 1 && src.charCodeAt(e - 1) === 95) e--;
+        if (e === k + 1 || !isAlnum(src.charCodeAt(e - 1))) break;
+        labels++;
+        k = e;
+        break;
+      }
+      break;
+    }
     labels++;
     k = m;
   }
   if (labels === 0) return null;
   if (k < n) {
     const c = src.charCodeAt(k);
-    if (isAlnum(c) || c === 95 || c === 45) return null;
+    if (isAlnum(c) || c === 45) return null;
+    // a trailing '_' that starts an emphasis delimiter run (it can close)
+    // does not block the email, but only when a '_' opener precedes it:
+    // marked tokenizes the emphasis content separately, where the
+    // delimiter is already consumed
+    if (c === 95) {
+      if (!hasUndOpener) return null;
+      let m = k;
+      while (m < n && src[m] === '_') m++;
+      const fl = flanking(src, k, m);
+      const canClose = fl.right && (!fl.left || fl.aPu);
+      if (!canClose) return null;
+      return { end: k };
+    }
   }
   return { end: k };
 }
